@@ -24,7 +24,7 @@ The server runs from `docker-compose.yaml`, pinned to the production versions (s
 | `v2_good_patched.py` | `scenario-v2-good` | **Proper step 1:** same change behind `workflow.patched("add-fraud-check")` |
 | `v3_deprecated.py` | `scenario-v3` | **Proper step 2:** `workflow.deprecate_patch(...)` |
 
-Activities sleep `ACTIVITY_DELAY` seconds (default 2) so there is time to send signals/updates. Order IDs containing `oos` are out of stock; `shipfail` makes shipping fail; `fraud` fails the v2 fraud check.
+Activities sleep a random 1 to 4 seconds per call (`ACTIVITY_DELAY_MIN` / `ACTIVITY_DELAY_MAX`) to mimic real API latency, so there is time to send signals/updates. A full run to `SHIPPED` takes roughly 5 to 20 seconds. Order IDs containing `oos` are out of stock; `shipfail` makes shipping fail; `fraud` fails the v2 fraud check.
 
 ## Setup
 
@@ -40,7 +40,7 @@ Happy path:
 ```bash
 make start ORDER_ID=1001
 make address ORDER_ID=1001      # within the first few seconds, before it ships
-make status ORDER_ID=1001       # SHIPPED once parked awaiting acknowledgement (~10s)
+make status ORDER_ID=1001       # SHIPPED once parked awaiting acknowledgement (5-20s)
 make ack ORDER_ID=1001          # or: make cancel ORDER_ID=1001
 make result ORDER_ID=1001
 ```

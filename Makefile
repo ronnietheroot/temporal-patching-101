@@ -121,7 +121,7 @@ lint: ## Run pre-commit (ruff)
 # ---- Scripts -------------------------------------------------------------------------------
 demo-bad: ## Print the "improper change + recovery" walkthrough
 	@echo "1. make server-bg && make scenario-v1 && make worker-bg"
-	@echo "2. make start ORDER_ID=2001   # wait ~10s until status is SHIPPED (parked awaiting ack)"
+	@echo "2. make start ORDER_ID=2001   # wait until status is SHIPPED (parked awaiting ack)"
 	@echo "3. make scenario-v2-bad && make restart-worker"
 	@echo "4. make status ORDER_ID=2001  # query forces replay -> fails; see Web UI / 'make show WORKFLOW_ID=order-2001'"
 	@echo "5. UNDO:  make scenario-v1 && make restart-worker   # workflow task retries and recovers"

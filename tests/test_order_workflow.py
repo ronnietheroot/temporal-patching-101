@@ -28,7 +28,8 @@ ALL_ACTIVITIES = [
 
 @pytest.fixture(autouse=True)
 def fast_activities(monkeypatch):
-    monkeypatch.setenv("ACTIVITY_DELAY", "0")
+    monkeypatch.setenv("ACTIVITY_DELAY_MIN", "0")
+    monkeypatch.setenv("ACTIVITY_DELAY_MAX", "0")
 
 
 @pytest.fixture

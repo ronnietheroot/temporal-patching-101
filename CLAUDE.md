@@ -20,5 +20,5 @@ A demo of safe vs. unsafe changes to running Temporal workflows (Python SDK, man
 - `scenarios/` is a package so the tests can import each version and replay a captured v1 history against it (`tests/test_order_workflow.py`).
 - `starter.py` addresses the workflow and its handlers by string name, so it works with any scenario. Workflow IDs are `order-<ORDER_ID>`; the task queue is `orders` (`models.TASK_QUEUE`).
 - The compose stack has a one-shot `temporal-schema` job (Postgres schemas), the server (the image has no `temporal` CLI, so its healthcheck is a TCP check), a one-shot `temporal-namespace` job that registers `default`, and the UI. `dynamicconfig/docker.yaml` is mounted because the server image requires that file to exist.
-- Activities keep state in an in-process dict and sleep `ACTIVITY_DELAY` seconds (default 2; tests set 0).
+- Activities keep state in an in-process dict and sleep a random `ACTIVITY_DELAY_MIN`..`ACTIVITY_DELAY_MAX` seconds per call (default 1..4; tests set both to 0).
 - Runtime files (`.worker.*`) are gitignored.

@@ -1,11 +1,13 @@
 """Simulated marketplace activities.
 
 State lives in this worker process only (a dict), which is plenty for a demo. Set
-ACTIVITY_DELAY (seconds, default 2) to widen the window for sending signals/updates.
+ACTIVITY_DELAY_MIN / ACTIVITY_DELAY_MAX (seconds, default 1 / 4) bound a random per-call sleep that
+simulates real API latency and widens the window for sending signals/updates.
 Special order ids: "*oos*" -> out of stock, "*shipfail*" -> shipping fails.
 """
 
 import os
+import random
 import time
 
 from temporalio import activity
@@ -20,7 +22,9 @@ INVENTORY: dict[str, dict[str, int]] = {
 
 
 def _delay() -> None:
-    time.sleep(float(os.environ.get("ACTIVITY_DELAY", "2")))
+    low = float(os.environ.get("ACTIVITY_DELAY_MIN", "1"))
+    high = float(os.environ.get("ACTIVITY_DELAY_MAX", "4"))
+    time.sleep(random.uniform(low, max(low, high)))
 
 
 @activity.defn
