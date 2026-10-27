@@ -2,17 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status
+## What this is
 
-This repo is an early scaffold for a Temporal (Python SDK) patching/versioning tutorial. `workflows.py`, `activities.py`, `worker.py` and `Makefile` exist but are currently empty, and there is no `pyproject.toml`/`requirements.txt` yet. Update this file once real code, dependencies and make targets land.
+A demo of safe vs. unsafe changes to running Temporal workflows (Python SDK, managed with `uv`). The README walks through the demos and lists patching gotchas.
 
-## Intended layout
+## Commands
 
-Standard Temporal Python split, one module each:
-- `workflows.py` — workflow definitions (must stay deterministic; this is where patching/versioning changes go)
-- `activities.py` — activity implementations
-- `worker.py` — worker that registers the workflows and activities
+`make help` lists everything. Common ones:
+- `make install`; `make server-bg` / `make server-stop` (dev server); `make worker-bg` / `make restart-worker` / `make worker-stop` (or `make worker` in the foreground)
+- `make start|ack|cancel|address|status|result ORDER_ID=1001` drive an order via `starter.py`
+- `make test` (pytest; spins up a local dev server per test run). Single test: `uv run pytest tests/test_order_workflow.py::test_unpatched_change_breaks_replay`
+- `make lint` runs pre-commit (Ruff check + format)
 
-## Tooling
+## Architecture
 
-- Lint/format via pre-commit with Ruff (`.pre-commit-config.yaml`): `ruff-check --fix` and `ruff-format`. Run with `pre-commit run --all-files`.
+- **`workflows.py` is a generated/live copy.** The real sources are `scenarios/v1_baseline.py`, `v2_bad_unpatched.py`, `v2_good_patched.py`, `v3_deprecated.py`. `make scenario-*` copies one over `workflows.py`, and the worker then needs `make restart-worker`. Edit the scenario files, not `workflows.py`, and keep `workflows.py` equal to `v1_baseline.py` when committing. If you change the base workflow, update all four scenarios so the diffs between them stay limited to the intended change.
+- `scenarios/` is a package so the tests can import each version and replay a captured v1 history against it (`tests/test_order_workflow.py`).
+- `starter.py` addresses the workflow and its handlers by string name, so it works with any scenario. Workflow IDs are `order-<ORDER_ID>`; the task queue is `orders` (`models.TASK_QUEUE`).
+- Activities keep state in an in-process dict and sleep `ACTIVITY_DELAY` seconds (default 2; tests set 0).
+- Runtime files (`.temporal.db*`, `.temporal-server.*`, `.worker.*`) are gitignored.

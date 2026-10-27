@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Demo runtime files
+.temporal-server.pid
+.temporal-server.log
+.temporal.db*
+.worker.pid
+.worker.log
