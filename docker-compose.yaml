@@ -1,0 +1,95 @@
+# Local Temporal stack pinned to the versions we run in production.
+#   server 1.31.2 / UI 2.51.1, PostgreSQL for persistence + visibility.
+# Frontend: localhost:7233   Web UI: http://localhost:8233
+
+x-temporal-env: &temporal-env
+  DB: postgres12
+  DB_PORT: "5432"
+  POSTGRES_USER: temporal
+  POSTGRES_PWD: temporal
+  POSTGRES_SEEDS: postgres
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    volumes:
+      - temporal-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot: create databases and apply schemas (idempotent).
+  temporal-schema:
+    image: temporalio/admin-tools:1.31.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SQL_PLUGIN: postgres12
+      SQL_HOST: postgres
+      SQL_PORT: "5432"
+      SQL_USER: temporal
+      SQL_PASSWORD: temporal
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        temporal-sql-tool --db temporal create-database
+        temporal-sql-tool --db temporal setup-schema -v 0.0
+        temporal-sql-tool --db temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+        temporal-sql-tool --db temporal_visibility create-database
+        temporal-sql-tool --db temporal_visibility setup-schema -v 0.0
+        temporal-sql-tool --db temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+    restart: "no"
+
+  temporal:
+    image: temporalio/server:1.31.2
+    depends_on:
+      temporal-schema:
+        condition: service_completed_successfully
+    environment:
+      <<: *temporal-env
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+    ports:
+      - "7233:7233"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z $$(hostname -i) 7233"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 5s
+
+  # One-shot: register the default namespace (idempotent).
+  temporal-namespace:
+    image: temporalio/admin-tools:1.31.2
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - temporal operator namespace describe -n default >/dev/null 2>&1 || temporal operator namespace create -n default --retention 3d
+    restart: "no"
+
+  temporal-ui:
+    image: temporalio/ui:2.51.1
+    depends_on:
+      temporal:
+        condition: service_healthy
+      temporal-namespace:
+        condition: service_completed_successfully
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8233
+    ports:
+      - "8233:8080"
+
+volumes:
+  temporal-postgres:

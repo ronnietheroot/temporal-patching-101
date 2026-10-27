@@ -7,13 +7,10 @@ RESET_TYPE  ?= LastWorkflowTask
 PATCH_ID    ?= add-fraud-check
 
 PY          := .venv/bin/python
-SERVER_PID  := .temporal-server.pid
-SERVER_LOG  := .temporal-server.log
-SERVER_DB   := .temporal.db
 WORKER_PID  := .worker.pid
 WORKER_LOG  := .worker.log
 
-.PHONY: help install server server-bg server-stop worker worker-bg worker-stop restart-worker \
+.PHONY: help install server server-bg server-stop server-reset server-logs worker worker-bg worker-stop restart-worker \
         start ack cancel address status result list show \
         scenario-v1 scenario-v2-bad scenario-v2-good scenario-v3 \
         list-patched list-unpatched reset terminate test lint demo-bad demo-good
@@ -24,21 +21,22 @@ help: ## Show this help
 install: ## Install dependencies with uv
 	uv sync
 
-# ---- Temporal dev server -------------------------------------------------------------------
-server: ## Run the dev server in the foreground (Web UI: http://localhost:8233)
-	temporal server start-dev --db-filename $(SERVER_DB)
+# ---- Temporal server (docker compose: server 1.31.2, UI 2.51.1, Postgres) ------------------
+server: ## Run the Temporal stack in the foreground (UI: http://localhost:8233)
+	docker compose up
 
-server-bg: ## Run the dev server in the background (logs: .temporal-server.log)
-	@if [ -f $(SERVER_PID) ] && kill -0 $$(cat $(SERVER_PID)) 2>/dev/null; then \
-		echo "Dev server already running (pid $$(cat $(SERVER_PID)))"; \
-	else \
-		nohup temporal server start-dev --db-filename $(SERVER_DB) > $(SERVER_LOG) 2>&1 & echo $$! > $(SERVER_PID); \
-		sleep 3; echo "Dev server started (pid $$(cat $(SERVER_PID))), UI: http://localhost:8233"; \
-	fi
+server-bg: ## Start the Temporal stack in the background and wait until healthy
+	docker compose up -d --wait temporal-ui
+	@echo "Temporal ready: localhost:7233, UI: http://localhost:8233"
 
-server-stop: ## Stop the background dev server
-	@if [ -f $(SERVER_PID) ]; then kill $$(cat $(SERVER_PID)) 2>/dev/null; rm -f $(SERVER_PID); echo "Dev server stopped"; \
-	else echo "No $(SERVER_PID) found"; fi
+server-stop: ## Stop the stack (workflow history is kept in the postgres volume)
+	docker compose down
+
+server-reset: ## Stop the stack AND delete all workflow history (postgres volume)
+	docker compose down -v
+
+server-logs: ## Tail the Temporal server logs
+	docker compose logs -f temporal
 
 # ---- Worker --------------------------------------------------------------------------------
 worker: ## Run the worker in the foreground (runs whatever is in workflows.py)

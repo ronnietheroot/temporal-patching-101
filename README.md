@@ -9,7 +9,9 @@ The workflow: `get_order` → `check_stock` → `check_inventory` → `update_in
 - **Query:** `get_status`
 - **Saga compensation:** if shipping fails, `restore_inventory` puts the stock back
 
-Prerequisites: [`temporal` CLI](https://docs.temporal.io/cli), [`uv`](https://docs.astral.sh/uv/). Run `make help` for every target.
+Prerequisites: Docker with Compose, the [`temporal` CLI](https://docs.temporal.io/cli) (used for `list`/`show`/`reset`), [`uv`](https://docs.astral.sh/uv/).
+
+The server runs from `docker-compose.yaml`, pinned to the production versions (server `1.31.2`, UI `2.51.1`) with PostgreSQL persistence and visibility. History survives `make server-stop`; `make server-reset` wipes it. `make server-logs` tails the server. Run `make help` for every target.
 
 ## How the demo is wired
 
@@ -28,7 +30,7 @@ Activities sleep `ACTIVITY_DELAY` seconds (default 2) so there is time to send s
 
 ```bash
 make install
-make server-bg      # dev server in the background; Web UI at http://localhost:8233 (make server-stop to stop)
+make server-bg      # docker compose: Temporal server 1.31.2 + UI 2.51.1 + Postgres (matches prod); UI at http://localhost:8233
 make scenario-v1
 make worker-bg      # logs in .worker.log (or run `make worker` in its own terminal)
 ```
