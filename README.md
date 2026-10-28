@@ -107,7 +107,7 @@ What the replay tests (`tests/test_order_workflow.py`) and the scenario diffs sh
 - Put `patched()` exactly where the change takes effect, and keep the old branch identical to the original code.
 - Patch IDs must be descriptive and unique, and never reused for a different change.
 - In Python, `patched()` is memoized, so it is not reliable inside loops. Suffix the ID per iteration (`f"change-{i}"`).
-- This workflow waits up to 24h for the customer, so executions live long and patches stay around long. For large or incompatible changes, prefer a new workflow type (`OrderWorkflowV2`) for new orders, or Worker Versioning (PINNED / AUTO_UPGRADE).
+- This workflow waits indefinitely for the customer (no ack timeout), so executions live long and patches stay around long. For large or incompatible changes, prefer a new workflow type (`OrderWorkflowV2`) for new orders, or Worker Versioning (PINNED / AUTO_UPGRADE).
 
 **Operations**
 - All workers on a task queue must run the same workflow code. Mixed fleets during a rollout cause flapping failures. In dev, stop the old worker before starting the new one.

@@ -4,7 +4,6 @@ Old histories have no marker -> patched() is False -> they skip the fraud check 
 cleanly. New executions record the marker and run the fraud check.
 """
 
-import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
@@ -23,7 +22,6 @@ with workflow.unsafe.imports_passed_through():
     )
     from models import OrderStatus, ShipmentInfo
 
-ACK_TIMEOUT = timedelta(hours=24)
 ACTIVITY_OPTS = {
     "start_to_close_timeout": timedelta(seconds=30),
     "retry_policy": RetryPolicy(maximum_attempts=3),
@@ -68,13 +66,7 @@ class OrderWorkflow:
             raise
         self._status = OrderStatus.SHIPPED
 
-        try:
-            await workflow.wait_condition(
-                lambda: self._acknowledged or self._cancelled, timeout=ACK_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            self._status = OrderStatus.ACK_TIMEOUT
-            return f"{shipment.tracking_number}: customer never acknowledged"
+        await workflow.wait_condition(lambda: self._acknowledged or self._cancelled)
 
         if self._cancelled:
             self._status = OrderStatus.CANCELLED

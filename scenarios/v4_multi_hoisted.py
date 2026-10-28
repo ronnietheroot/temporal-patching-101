@@ -5,7 +5,6 @@ are now spread across the run method through shared variables and combined condi
 See v5_hoisted_deprecate_wrong / v5_hoisted_deprecate_right for what that costs.
 """
 
-import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
@@ -26,7 +25,6 @@ with workflow.unsafe.imports_passed_through():
     )
     from models import OrderStatus, ShipmentInfo
 
-ACK_TIMEOUT = timedelta(hours=24)
 ACTIVITY_OPTS = {
     "start_to_close_timeout": timedelta(seconds=30),
     "retry_policy": RetryPolicy(maximum_attempts=3),
@@ -80,13 +78,7 @@ class OrderWorkflow:
                 send_shipment_notification, args=[order, shipment], **ACTIVITY_OPTS
             )
 
-        try:
-            await workflow.wait_condition(
-                lambda: self._acknowledged or self._cancelled, timeout=ACK_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            self._status = OrderStatus.ACK_TIMEOUT
-            return f"{shipment.tracking_number}: customer never acknowledged"
+        await workflow.wait_condition(lambda: self._acknowledged or self._cancelled)
 
         if self._cancelled:
             self._status = OrderStatus.CANCELLED
