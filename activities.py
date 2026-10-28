@@ -91,3 +91,16 @@ def ship_order(order: Order, warehouse: str, address: str) -> ShipmentInfo:
     return ShipmentInfo(
         tracking_number=f"TRK-{order.order_id}", address=address, warehouse=warehouse
     )
+
+
+@activity.defn
+def send_shipment_notification(order: Order, shipment: ShipmentInfo) -> None:
+    """Added by the `notify-on-ship` patch."""
+    _delay()
+
+
+@activity.defn
+def award_loyalty_points(order: Order) -> int:
+    """Added by the `award-loyalty-points` patch."""
+    _delay()
+    return sum(item.quantity for item in order.items) * 10

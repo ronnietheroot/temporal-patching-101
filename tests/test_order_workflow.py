@@ -13,7 +13,16 @@ from temporalio.worker import Replayer, Worker, WorkflowReplayResult
 
 import activities
 from models import TASK_QUEUE
-from scenarios import v1_baseline, v2_bad_unpatched, v2_good_patched, v3_deprecated
+from scenarios import (
+    v1_baseline,
+    v2_bad_unpatched,
+    v2_good_patched,
+    v3_deprecated,
+    v4_multi_hoisted,
+    v4_multi_inline,
+    v5_hoisted_deprecate_right,
+    v5_hoisted_deprecate_wrong,
+)
 
 ALL_ACTIVITIES = [
     activities.get_order,
@@ -23,6 +32,8 @@ ALL_ACTIVITIES = [
     activities.update_inventory,
     activities.restore_inventory,
     activities.ship_order,
+    activities.send_shipment_notification,
+    activities.award_loyalty_points,
 ]
 
 
@@ -151,3 +162,61 @@ async def v2_history(env):
 
 async def test_deprecated_patch_replays_marker_history(v2_history):
     assert (await replay(v3_deprecated.OrderWorkflow, v2_history)).replay_failure is None
+
+
+@pytest.fixture
+async def v4_history(env):
+    """History of an order started under the hoisted three-patch workflow (all markers)."""
+    async with worker_for(env.client, v4_multi_hoisted.OrderWorkflow):
+        handle = await env.client.start_workflow(
+            "OrderWorkflow", "replay-4", id=f"order-{uuid.uuid4()}", task_queue=TASK_QUEUE
+        )
+        await wait_for_status(handle, "SHIPPED")
+        return await handle.fetch_history()
+
+
+async def test_inline_and_hoisted_styles_are_not_interchangeable(
+    v1_history, v2_history, v4_history
+):
+    """Hoisting moves the marker to the first workflow task, so switching style is itself breaking.
+
+    Histories from the inline lineage (v1, v2) replay on inline code; histories recorded by the
+    hoisted code (v4) replay only on hoisted code. v1 (no markers) is safe either way.
+    """
+    inline, hoisted = v4_multi_inline.OrderWorkflow, v4_multi_hoisted.OrderWorkflow
+    assert (await replay(inline, v1_history)).replay_failure is None
+    assert (await replay(inline, v2_history)).replay_failure is None
+    assert (await replay(inline, v4_history)).replay_failure is not None
+    assert (await replay(hoisted, v1_history)).replay_failure is None
+    assert (await replay(hoisted, v2_history)).replay_failure is not None
+    assert (await replay(hoisted, v4_history)).replay_failure is None
+
+
+async def test_hoisted_wrong_cleanup_breaks_every_population(v1_history, v2_history, v4_history):
+    """Hardcoding the variable breaks unmarked histories (extra command) and marker-bearing
+    ones ("non-deprecated patch marker ... no corresponding change command")."""
+    wrong = v5_hoisted_deprecate_wrong.OrderWorkflow
+    for history in (v1_history, v2_history, v4_history):
+        result = await replay(wrong, history)
+        assert "Nondeterminism" in type(result.replay_failure).__name__
+
+
+async def test_hoisted_right_cleanup_only_fits_the_hoisted_lineage(
+    v1_history, v2_history, v4_history
+):
+    right = v5_hoisted_deprecate_right.OrderWorkflow
+    # Pre-patch order still open: must be closed (or reset) before deprecating.
+    assert (await replay(right, v1_history)).replay_failure is not None
+    # Marker recorded mid-flow by the inline v2 code: no longer lines up with a hoisted call.
+    assert (await replay(right, v2_history)).replay_failure is not None
+    # Histories recorded by the hoisted code are the ones this cleanup is safe for.
+    assert (await replay(right, v4_history)).replay_failure is None
+
+
+def test_right_cleanup_keeps_remaining_patches():
+    import inspect
+
+    src = inspect.getsource(v5_hoisted_deprecate_right)
+    assert 'deprecate_patch("add-fraud-check")' in src
+    assert 'patched("add-fraud-check")' not in src
+    assert 'patched("notify-on-ship")' in src and 'patched("award-loyalty-points")' in src

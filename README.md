@@ -68,9 +68,30 @@ make result ORDER_ID=1001
 
 `make demo-bad` and `make demo-good` print these steps.
 
+## Demo 3: multiple patches, and patch results saved in variables
+
+More changes arrive, so more patches pile up. This demo has three: `add-fraud-check`, `notify-on-ship` (new `send_shipment_notification` after shipping) and `award-loyalty-points` (new `award_loyalty_points` after the customer acknowledges).
+
+| Scenario | Make target | What it is |
+|---|---|---|
+| `v4_multi_inline.py` | `scenario-v4-multi-inline` | Each patch is an inline `if workflow.patched("...")` where the change happens |
+| `v4_multi_hoisted.py` | `scenario-v4-multi-hoisted` | The same three patches saved as `fraud_check = workflow.patched(...)`, `notify = ...`, `loyalty = ...` at the top of `run`, then reused in several places (including a combined `notify and loyalty` condition) |
+| `v5_hoisted_deprecate_wrong.py` | `scenario-v5-hoisted-wrong` | The tempting one-line cleanup: `fraud_check = True` |
+| `v5_hoisted_deprecate_right.py` | `scenario-v5-hoisted-right` | The correct `deprecate_patch` for `add-fraud-check` only |
+
+`make seed-populations` opens three orders, each recorded by a different version of the code: `5001` (no markers), `5002` (fraud marker only, inline) and `5003` (all three markers, hoisted). `make list-patches` shows which open orders carry which marker, and `make status-all` queries all three (a query forces a replay, so it shows which ones the live code can still replay). `make reset-all` resets them. `make demo-multi` prints the walkthrough.
+
+What the replay tests (`tests/test_order_workflow.py`) and the scenario diffs show:
+
+- **Hoisting is behaviorally identical but not replay-compatible.** `patched()` records its marker at the point it is called. Hoisted, that is the first workflow task, not the change site. So inline code cannot replay histories recorded by hoisted code, and hoisted code cannot replay histories recorded by inline code (`non-deprecated patch marker encountered ... but there is no corresponding change command`). Turning inline patches into variables is itself a breaking change for open workflows.
+- **Deprecating one hoisted patch touches every use site.** `diff scenarios/v4_multi_hoisted.py scenarios/v5_hoisted_deprecate_right.py` is small here, but only because the example is small. You must replace the assignment with `deprecate_patch(...)` at the same position, rewrite each guarded call, find the second use far below, and untangle any combined condition (`notify and loyalty`). Miss one and you get a `NameError` or a silent behavior change.
+- **The shortcut breaks everything.** Hardcoding the variable (`fraud_check = True`) fails replay for histories without the marker and for histories with it. Removing a `patched()` call is only legal as `deprecate_patch()`.
+- **The right cleanup still has preconditions.** It replays only histories recorded by the hoisted code. Orders that predate the patch (`5001`) and orders from the inline lineage (`5002`) fail, so they must close (or be reset) first. With three patches there are already several populations to drain, in order.
+- **Hoisted patches decide once.** An open order that has not reached a change site never adopts the new behavior, because the decision was made at the top. Inline patches would apply it.
+
 ## Tests
 
-`make test` runs behavior tests (signals, update validation, saga) and **replay tests** against a history captured from v1: v1 and v2-good replay cleanly, v2-bad raises a non-determinism error. Running `Replayer` against exported production histories in CI is how you catch this before deploying.
+`make test` runs behavior tests (signals, update validation, saga) and **replay tests** against histories captured from v1, v2-good and v4-hoisted: v1 and v2-good replay cleanly, v2-bad raises a non-determinism error, and the multi-patch matrix covers inline vs hoisted and the wrong/right cleanups. Running `Replayer` against exported production histories in CI is how you catch this before deploying.
 
 ## Patching gotchas & things to avoid
 
@@ -93,4 +114,6 @@ make result ORDER_ID=1001
 - Non-determinism is a *workflow task* failure, not a workflow failure: the workflow stays Running and retries, and recovers once the code matches again. Don't terminate in production just because you see the error. Fix or revert the code first.
 - Reverting only works if the workflow did not progress under the bad code. If it did, use `reset`.
 - `reset` re-executes everything after the reset point, so activities like `update_inventory` and `ship_order` must be idempotent (this demo's in-memory ones are not).
+- Don't save `patched()` in a variable (see Demo 3). If you must, keep it 1:1 with one change site, never refactor between inline and hoisted while workflows are open, and deprecate patches in the order they were introduced.
+- Every patch adds a history population (no marker, marker 1, markers 1+2, ...). Keep the list of live patch IDs short, and use `make list-patches` before each deprecation.
 - Don't run replay checks only by eye. Test with `Replayer` against real exported histories (`temporal workflow show --output json`) before deploying.

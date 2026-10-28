@@ -5,6 +5,10 @@ WORKFLOW_ID ?= order-$(ORDER_ID)
 ADDRESS     ?= 500 Howard St, San Francisco, CA
 RESET_TYPE  ?= LastWorkflowTask
 PATCH_ID    ?= add-fraud-check
+PATCH_IDS   ?= add-fraud-check notify-on-ship award-loyalty-points
+SEED_V1     ?= 5001
+SEED_V2     ?= 5002
+SEED_V4     ?= 5003
 
 PY          := .venv/bin/python
 WORKER_PID  := .worker.pid
@@ -13,7 +17,9 @@ WORKER_LOG  := .worker.log
 .PHONY: help install server server-bg server-stop server-reset server-logs worker worker-bg worker-stop restart-worker \
         start ack cancel address status result list show \
         scenario-v1 scenario-v2-bad scenario-v2-good scenario-v3 \
-        list-patched list-unpatched reset terminate test lint demo-bad demo-good
+        scenario-v4-multi-inline scenario-v4-multi-hoisted scenario-v5-hoisted-wrong scenario-v5-hoisted-right \
+        list-patched list-unpatched list-patches seed-populations status-all reset reset-all terminate \
+        test lint demo-bad demo-good demo-multi
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -98,6 +104,22 @@ scenario-v3: ## Live workflows.py := v3 (deprecate_patch)
 	cp scenarios/v3_deprecated.py workflows.py
 	@echo ">> workflows.py is now v3 (deprecate_patch). Only safe once no pre-patch orders are open."
 
+scenario-v4-multi-inline: ## Live workflows.py := 3 patches, each inline where the change happens
+	cp scenarios/v4_multi_inline.py workflows.py
+	@echo ">> workflows.py is now v4 (3 inline patches). Run 'make restart-worker'."
+
+scenario-v4-multi-hoisted: ## Live workflows.py := same 3 patches saved in variables at the top of run()
+	cp scenarios/v4_multi_hoisted.py workflows.py
+	@echo ">> workflows.py is now v4 (3 HOISTED patch variables). Run 'make restart-worker'."
+
+scenario-v5-hoisted-wrong: ## Live workflows.py := WRONG cleanup of a hoisted patch (fraud_check = True)
+	cp scenarios/v5_hoisted_deprecate_wrong.py workflows.py
+	@echo ">> workflows.py is now v5-WRONG. Run 'make restart-worker' and run 'make status-all'."
+
+scenario-v5-hoisted-right: ## Live workflows.py := correct deprecation of the hoisted add-fraud-check patch
+	cp scenarios/v5_hoisted_deprecate_right.py workflows.py
+	@echo ">> workflows.py is now v5-RIGHT. Only safe once 'make list-unpatched' and inline-lineage orders are gone."
+
 # ---- Patch bookkeeping & recovery ----------------------------------------------------------
 list-patched: ## Open orders that have the patch marker (PATCH_ID=...)
 	temporal workflow list --query 'WorkflowType = "OrderWorkflow" AND ExecutionStatus = "Running" AND TemporalChangeVersion = "$(PATCH_ID)"'
@@ -105,8 +127,38 @@ list-patched: ## Open orders that have the patch marker (PATCH_ID=...)
 list-unpatched: ## Open orders WITHOUT any patch marker (must be empty before deprecating)
 	temporal workflow list --query 'WorkflowType = "OrderWorkflow" AND ExecutionStatus = "Running" AND TemporalChangeVersion IS NULL'
 
+list-patches: ## Show open orders per patch ID (PATCH_IDS=...) and those with no marker
+	@for id in $(PATCH_IDS); do \
+		echo "== $$id"; \
+		temporal workflow list --query "WorkflowType = \"OrderWorkflow\" AND ExecutionStatus = \"Running\" AND TemporalChangeVersion = \"$$id\"" 2>&1 | tail -n +2; \
+	done; \
+	echo "== (no patch marker)"; \
+	temporal workflow list --query 'WorkflowType = "OrderWorkflow" AND ExecutionStatus = "Running" AND TemporalChangeVersion IS NULL' 2>&1 | tail -n +2
+
+seed-populations: ## Open 3 orders under v1, v2-good, v4-hoisted (leaves v4-hoisted live)
+	@set -e; \
+	for entry in "scenario-v1 $(SEED_V1)" "scenario-v2-good $(SEED_V2)" "scenario-v4-multi-hoisted $(SEED_V4)"; do \
+		set -- $$entry; \
+		$(MAKE) --no-print-directory $$1 restart-worker >/dev/null; \
+		$(PY) starter.py start $$2; \
+		for i in $$(seq 1 60); do \
+			$(PY) starter.py status $$2 2>/dev/null | grep -q '^SHIPPED' && break; sleep 1; \
+		done; \
+		echo "order $$2 parked awaiting acknowledgement"; \
+	done; \
+	echo "Seeded: $(SEED_V1)=no markers, $(SEED_V2)=fraud marker only (inline), $(SEED_V4)=3 markers (hoisted). Live: v4-hoisted."
+
+status-all: ## Query the seeded orders; shows which fail replay after a deploy
+	@for id in $(SEED_V1) $(SEED_V2) $(SEED_V4); do \
+		printf "order %s: " $$id; \
+		$(PY) starter.py status $$id 2>&1 | tail -1 | cut -c1-200; \
+	done
+
 reset: ## Reset WORKFLOW_ID to RESET_TYPE (LastWorkflowTask|FirstWorkflowTask) -- re-runs later activities!
 	temporal workflow reset --workflow-id $(WORKFLOW_ID) --type $(RESET_TYPE) --reason "recover from non-determinism"
+
+reset-all: ## Reset the seeded orders to RESET_TYPE (re-runs later activities!)
+	@for id in $(SEED_V1) $(SEED_V2) $(SEED_V4); do $(MAKE) --no-print-directory reset WORKFLOW_ID=order-$$id || true; done
 
 terminate: ## Dev only: terminate WORKFLOW_ID
 	temporal workflow terminate --workflow-id $(WORKFLOW_ID) --reason "demo cleanup"
@@ -136,3 +188,15 @@ demo-good: ## Print the "proper patching" walkthrough
 	@echo "5. make ack ORDER_ID=3001 && make ack ORDER_ID=3002   # both complete"
 	@echo "6. make list-unpatched is empty -> make scenario-v3 && make restart-worker (deprecate_patch)"
 	@echo "7. once no marker-bearing orders remain open, delete deprecate_patch() (step 3)"
+
+demo-multi: ## Print the multiple-patches / hoisted-variable walkthrough
+	@echo "1. make server-bg && make seed-populations   # 3 open orders: no marker / inline fraud marker / 3 hoisted markers"
+	@echo "2. make list-patches ; make status-all       # 5002 (inline lineage) already FAILS under the hoisted code:"
+	@echo "                                             #    inline -> hoisted is itself a breaking refactor"
+	@echo "   make scenario-v2-good restart-worker      # revert -> 5002 recovers, but now 5003 fails (marker positions differ)"
+	@echo "3. make scenario-v4-multi-hoisted restart-worker; make status-all   # back to the hoisted code: 5001+5003 fine"
+	@echo "4. WRONG cleanup of one hoisted patch:  make scenario-v5-hoisted-wrong restart-worker; make status-all  # all fail"
+	@echo "5. revert, then RIGHT cleanup:          make scenario-v5-hoisted-right restart-worker; make status-all"
+	@echo "   -> 5001 (no marker) fails and 5002 fails: both populations must be closed/reset before this deploy"
+	@echo "   diff scenarios/v4_multi_hoisted.py scenarios/v5_hoisted_deprecate_right.py   # scattered edits for ONE patch"
+	@echo "6. Cleanup: make reset-all  or  make terminate WORKFLOW_ID=order-5001 (etc.)"

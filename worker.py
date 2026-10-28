@@ -7,11 +7,13 @@ from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
 from activities import (
+    award_loyalty_points,
     check_fraud,
     check_inventory,
     check_stock,
     get_order,
     restore_inventory,
+    send_shipment_notification,
     ship_order,
     update_inventory,
 )
@@ -38,6 +40,8 @@ async def main() -> None:
                 update_inventory,
                 restore_inventory,
                 ship_order,
+                send_shipment_notification,
+                award_loyalty_points,
             ],
             activity_executor=executor,
         )
