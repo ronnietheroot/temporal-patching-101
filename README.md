@@ -68,7 +68,7 @@ make result ORDER_ID=1001
 
 `make demo-bad` and `make demo-good` print these steps.
 
-## Demo 3: multiple patches, and patch results saved in variables
+## Demo 3: multiple patches, inline vs saved in variables
 
 More changes arrive, so more patches pile up. This demo has three: `add-fraud-check`, `notify-on-ship` (new `send_shipment_notification` after shipping) and `award-loyalty-points` (new `award_loyalty_points` after the customer acknowledges).
 
@@ -76,15 +76,30 @@ More changes arrive, so more patches pile up. This demo has three: `add-fraud-ch
 |---|---|---|
 | `v4_multi_inline.py` | `scenario-v4-multi-inline` | Each patch is an inline `if workflow.patched("...")` where the change happens |
 | `v4_multi_hoisted.py` | `scenario-v4-multi-hoisted` | The same three patches saved as `fraud_check = workflow.patched(...)`, `notify = ...`, `loyalty = ...` at the top of `run`, then reused in several places (including a combined `notify and loyalty` condition) |
+| `v5_inline_deprecate.py` | `scenario-v5-inline-deprecate` | The correct `deprecate_patch` for `add-fraud-check` with inline patches: one contiguous edit |
 | `v5_hoisted_deprecate_wrong.py` | `scenario-v5-hoisted-wrong` | The tempting one-line cleanup: `fraud_check = True` |
 | `v5_hoisted_deprecate_right.py` | `scenario-v5-hoisted-right` | The correct `deprecate_patch` for `add-fraud-check` only |
 
-`make seed-populations` opens three orders, each recorded by a different version of the code: `5001` (no markers), `5002` (fraud marker only, inline) and `5003` (all three markers, hoisted). `make list-patches` shows which open orders carry which marker, and `make status-all` queries all three (a query forces a replay, so it shows which ones the live code can still replay). `make reset-all` resets them. `make demo-multi` prints the walkthrough.
+Two tracks tell the same story (seed open orders, inspect which patch markers they carry, deprecate `add-fraud-check`), one per style. They use separate order IDs because inline and hoisted histories cannot replay on each other's code (see below).
+
+**3a. Inline patches (proper)**
+
+1. `make seed-inline` opens `5001` (no markers), `5002` (fraud marker, from v2-good) and `5003` (all three markers), and leaves `v4_multi_inline` live.
+2. `make list-patches` shows which open orders carry which marker. `make status-all` queries them (a query forces a replay), and all three are healthy.
+3. `make scenario-v5-inline-deprecate && make restart-worker && make status-all`. The cleanup is **one contiguous edit** at the change site. `5002` and `5003` replay fine; `5001` (no marker) fails, so it must close (or be reset) before this deploy.
+
+**3b. Patch results saved in variables (hoisted)**
+
+1. Start clean (`make scenario-v1 && make server-reset && make server-bg`), then `make seed-hoisted` opens `6001` (no markers) and `6002` (three markers) with `v4_multi_hoisted` live.
+2. Wrong cleanup: `make scenario-v5-hoisted-wrong && make restart-worker && make status-all`. Everything fails.
+3. Revert (`make scenario-v4-multi-hoisted && make restart-worker`), then the right cleanup: `make scenario-v5-hoisted-right && make restart-worker`. `6002` replays, `6001` fails, and the edit is **three separate hunks** (`diff scenarios/v4_multi_hoisted.py scenarios/v5_hoisted_deprecate_right.py`).
+
+`make reset-all` resets all seeded orders; `make demo-multi` prints both walkthroughs.
 
 What the replay tests (`tests/test_order_workflow.py`) and the scenario diffs show:
 
 - **Hoisting is behaviorally identical but not replay-compatible.** `patched()` records its marker at the point it is called. Hoisted, that is the first workflow task, not the change site. So inline code cannot replay histories recorded by hoisted code, and hoisted code cannot replay histories recorded by inline code (`non-deprecated patch marker encountered ... but there is no corresponding change command`). Turning inline patches into variables is itself a breaking change for open workflows.
-- **Deprecating one hoisted patch touches every use site.** `diff scenarios/v4_multi_hoisted.py scenarios/v5_hoisted_deprecate_right.py` is small here, but only because the example is small. You must replace the assignment with `deprecate_patch(...)` at the same position, rewrite each guarded call, find the second use far below, and untangle any combined condition (`notify and loyalty`). Miss one and you get a `NameError` or a silent behavior change.
+- **Deprecating one hoisted patch touches every use site.** The inline cleanup is one hunk and the hoisted one is three (a test asserts both counts), and that is on a small example. You must replace the assignment with `deprecate_patch(...)` at the same position, rewrite each guarded call, find the second use far below, and untangle any combined condition (`notify and loyalty`). Miss one and you get a `NameError` or a silent behavior change.
 - **The shortcut breaks everything.** Hardcoding the variable (`fraud_check = True`) fails replay for histories without the marker and for histories with it. Removing a `patched()` call is only legal as `deprecate_patch()`.
 - **The right cleanup still has preconditions.** It replays only histories recorded by the hoisted code. Orders that predate the patch (`5001`) and orders from the inline lineage (`5002`) fail, so they must close (or be reset) first. With three patches there are already several populations to drain, in order.
 - **Hoisted patches decide once.** An open order that has not reached a change site never adopts the new behavior, because the decision was made at the top. Inline patches would apply it.

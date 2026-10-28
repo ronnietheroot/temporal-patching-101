@@ -22,6 +22,7 @@ from scenarios import (
     v4_multi_inline,
     v5_hoisted_deprecate_right,
     v5_hoisted_deprecate_wrong,
+    v5_inline_deprecate,
 )
 
 ALL_ACTIVITIES = [
@@ -220,3 +221,48 @@ def test_right_cleanup_keeps_remaining_patches():
     assert 'deprecate_patch("add-fraud-check")' in src
     assert 'patched("add-fraud-check")' not in src
     assert 'patched("notify-on-ship")' in src and 'patched("award-loyalty-points")' in src
+
+
+@pytest.fixture
+async def v4_inline_history(env):
+    """History of an order started under the inline three-patch workflow (all markers)."""
+    async with worker_for(env.client, v4_multi_inline.OrderWorkflow):
+        handle = await env.client.start_workflow(
+            "OrderWorkflow", "replay-4i", id=f"order-{uuid.uuid4()}", task_queue=TASK_QUEUE
+        )
+        await wait_for_status(handle, "SHIPPED")
+        return await handle.fetch_history()
+
+
+async def test_inline_lineage_replays_its_own_three_marker_history(v4_inline_history):
+    assert (await replay(v4_multi_inline.OrderWorkflow, v4_inline_history)).replay_failure is None
+    assert (
+        await replay(v4_multi_hoisted.OrderWorkflow, v4_inline_history)
+    ).replay_failure is not None
+
+
+async def test_inline_deprecation_needs_unmarked_population_closed(
+    v1_history, v2_history, v4_inline_history
+):
+    deprecate = v5_inline_deprecate.OrderWorkflow
+    assert (await replay(deprecate, v1_history)).replay_failure is not None
+    assert (await replay(deprecate, v2_history)).replay_failure is None
+    assert (await replay(deprecate, v4_inline_history)).replay_failure is None
+
+
+def _hunks(before, after) -> int:
+    """Number of separate changed regions in the code (docstring excluded) of two scenarios."""
+    import difflib
+    import inspect
+
+    def code(module):
+        src = inspect.getsource(module)
+        return src[src.index("from datetime") :].splitlines()
+
+    ops = difflib.SequenceMatcher(None, code(before), code(after)).get_opcodes()
+    return sum(1 for tag, *_ in ops if tag != "equal")
+
+
+def test_inline_deprecation_is_one_hunk_hoisted_is_scattered():
+    assert _hunks(v4_multi_inline, v5_inline_deprecate) == 1
+    assert _hunks(v4_multi_hoisted, v5_hoisted_deprecate_right) == 3
