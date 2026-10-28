@@ -21,8 +21,10 @@ The server runs from `docker-compose.yaml`, pinned to the production versions (s
 |---|---|---|
 | `v1_baseline.py` | `scenario-v1` | The original workflow. Also the "undo" target. |
 | `v2_bad_unpatched.py` | `scenario-v2-bad` | **Improper:** inserts `check_fraud` mid-sequence with no patch |
-| `v2_good_patched.py` | `scenario-v2-good` | **Proper step 1:** same change behind `workflow.patched("add-fraud-check")` |
+| `v2_good_patched.py` | `scenario-v2-good` | **Proper step 1:** same change behind `workflow.patched("order-fraud-check")` |
 | `v3_deprecated.py` | `scenario-v3` | **Proper step 2:** `workflow.deprecate_patch(...)` |
+
+The multi-patch (`v4`, `v5`) and guide scenarios (`lifecycle_*`, `chain_*`, `anti_*`) are described in Demos 3 to 7; `make list-scenarios` prints them all.
 
 Activities sleep a random 1 to 4 seconds per call (`ACTIVITY_DELAY_MIN` / `ACTIVITY_DELAY_MAX`) to mimic real API latency, so there is time to send signals/updates. A full run to `SHIPPED` takes roughly 5 to 20 seconds. Order IDs containing `oos` are out of stock; `shipfail` makes shipping fail; `fraud` fails the v2 fraud check.
 
@@ -70,17 +72,17 @@ make result ORDER_ID=1001
 
 ## Demo 3: multiple patches, inline vs saved in variables
 
-More changes arrive, so more patches pile up. This demo has three: `add-fraud-check`, `notify-on-ship` (new `send_shipment_notification` after shipping) and `award-loyalty-points` (new `award_loyalty_points` after the customer acknowledges).
+More changes arrive, so more patches pile up. This demo has three: `order-fraud-check`, `order-notify-on-ship` (new `send_shipment_notification` after shipping) and `order-award-loyalty-points` (new `award_loyalty_points` after the customer acknowledges).
 
 | Scenario | Make target | What it is |
 |---|---|---|
 | `v4_multi_inline.py` | `scenario-v4-multi-inline` | Each patch is an inline `if workflow.patched("...")` where the change happens |
 | `v4_multi_hoisted.py` | `scenario-v4-multi-hoisted` | The same three patches saved as `fraud_check = workflow.patched(...)`, `notify = ...`, `loyalty = ...` at the top of `run`, then reused in several places (including a combined `notify and loyalty` condition) |
-| `v5_inline_deprecate.py` | `scenario-v5-inline-deprecate` | The correct `deprecate_patch` for `add-fraud-check` with inline patches: one contiguous edit |
+| `v5_inline_deprecate.py` | `scenario-v5-inline-deprecate` | The correct `deprecate_patch` for `order-fraud-check` with inline patches: one contiguous edit |
 | `v5_hoisted_deprecate_wrong.py` | `scenario-v5-hoisted-wrong` | The tempting one-line cleanup: `fraud_check = True` |
-| `v5_hoisted_deprecate_right.py` | `scenario-v5-hoisted-right` | The correct `deprecate_patch` for `add-fraud-check` only |
+| `v5_hoisted_deprecate_right.py` | `scenario-v5-hoisted-right` | The correct `deprecate_patch` for `order-fraud-check` only |
 
-Two tracks tell the same story (seed open orders, inspect which patch markers they carry, deprecate `add-fraud-check`), one per style. They use separate order IDs because inline and hoisted histories cannot replay on each other's code (see below).
+Two tracks tell the same story (seed open orders, inspect which patch markers they carry, deprecate `order-fraud-check`), one per style. They use separate order IDs because inline and hoisted histories cannot replay on each other's code (see below).
 
 **3a. Inline patches (proper)**
 
@@ -103,6 +105,75 @@ What the replay tests (`tests/test_order_workflow.py`) and the scenario diffs sh
 - **The shortcut breaks everything.** Hardcoding the variable (`fraud_check = True`) fails replay for histories without the marker and for histories with it. Removing a `patched()` call is only legal as `deprecate_patch()`.
 - **The right cleanup still has preconditions.** It replays only histories recorded by the hoisted code. Orders that predate the patch (`5001`) and orders from the inline lineage (`5002`) fail, so they must close (or be reset) first. With three patches there are already several populations to drain, in order.
 - **Hoisted patches decide once.** An open order that has not reached a change site never adopts the new behavior, because the decision was made at the top. Inline patches would apply it.
+
+## Demos 4 to 7: patterns and anti-patterns from the platform-core patching guide
+
+These follow `bevaya/platform-core/documentation/temporal-workflow-changes-and-patching-guide.md`. The change used here is replacing `update_inventory` with `reserve_inventory` (patch `order-reserve-inventory`), then with `hold_inventory` (patch `order-hold-inventory`), plus a per-item `audit_item` (`order-item-audit`). `make list-scenarios` lists every scenario with a one-line description, and `make scenario NAME=<file>` deploys any of them. Each result below is asserted by a replay test in `tests/test_patterns.py`, not just described.
+
+The tests replay *histories recorded under one version of the code on another*. A replay "fails" when the live worker would raise a non-determinism error for that order.
+
+### Demo 4: the three-phase lifecycle
+
+| Phase | Scenario | Make target |
+|---|---|---|
+| 1. Patch (keep the old branch) | `lifecycle_1_patch.py` | `scenario-lifecycle-1-patch` |
+| 2. Deprecate (`deprecate_patch` + new path only) | `lifecycle_2_deprecate.py` | `scenario-lifecycle-2-deprecate` |
+| 3. Remove (single path) | `lifecycle_3_remove.py` | `scenario-lifecycle-3-remove` |
+
+`make seed-lifecycle` opens `7001` (legacy, no marker) and `7002` (phase-1 marker). Then:
+
+1. Deploy phase 2 and `make status-all`: `7001` fails (`update_inventory` in history, `reserve_inventory` in code). Phase 2 is only safe once no open order took the old branch. `7002` replays.
+2. Deploy phase 3: `7002` now fails with `Non-deprecated patch marker encountered ... but there is no corresponding change command`. **Skipping phase 2 breaks phase-1 markers**; histories recorded under phase 2 carry a *lenient* marker, so removing `deprecate_patch` is safe for them (tested).
+3. `make retention-check` is the pre-flight for phase 2: namespace retention, open orders per patch ID and with no marker, and orders closed within `RETENTION_DAYS` (closed orders are still replayable until retention expires). Deploy phase 2 only when no open order lacks the marker **and** the retention window of the last old-path order has elapsed.
+
+### Demo 5: chained `elif` versions (deprecate bottom-up)
+
+`chain_1_all_versions.py` checks the newest patch first (`if patched(hold) ... elif patched(reserve) ... else legacy`). Then `chain_2_deprecate_oldest.py`, `chain_3_deprecate_next.py`, `chain_4_final.py` are the guide's steps 2 to 4. `make seed-chain` opens `8001` (legacy), `8002` (reserve era) and `8003` (hold era).
+
+- Step 2 breaks the legacy order only. Step 3 deployed *top-down* (before the reserve era drains) breaks both older eras. Step 4 breaks every order recorded before step 3, because their markers are not deprecated yet.
+- Each deprecation waits for the previous era to close **and** pass the retention window. Run `make retention-check` between steps.
+
+### Demo 6: anti-patterns
+
+| Anti-pattern | Scenario | What the tests show |
+|---|---|---|
+| Inverted patch (`if not workflow.patched(...)`) | `anti_inverted.py`, `anti_inverted_bad_deprecate.py` | Replays exactly like the proper form, so nothing flags it. The cost is reasoning: the guarded branch is the *old* code, and the natural cleanup (keep the body) deletes the new path and breaks every new order. |
+| Nested patches | `anti_nested.py`, `anti_nested_deprecate_inner.py` | Three history populations (legacy / outer only / outer and inner). Deprecating the inner patch while outer-only orders are open sends them down the wrong path. `make seed-nested`. Use the flat `elif` chain instead. |
+| `patched()` inside a loop | `anti_patch_in_loop.py` vs `loop_hoisted_ok.py` | Identical replay: `patched()` is memoized, so it is one decision made on the first iteration. The loop form only *suggests* a per-item decision; hoist the conditional. |
+| Reusing a patch ID for a different change | `anti_patch_id_reuse.py` | Orders that already carry the marker take the new path "regardless of intent". An open order **silently runs the new activity** (`make seed-idreuse`, deploy, ack it, `make show WORKFLOW_ID=order-9201`); an order whose history already passed that point fails replay. |
+| Ticket-style or mixed-case IDs (`squ-533`, `addApiUrl`) | n/a | `test_patch_ids_follow_the_naming_convention` rejects any ID that is not lowercase kebab-case with the `order-` workflow slug. |
+
+`make demo-antipatterns` prints the walkthrough.
+
+### Demo 7: rename/cutover and when not to patch
+
+For rare, short or internal workflows, skip patching: ship the new behavior as a new workflow type and drain the old one.
+
+1. `workflows_v2.py` holds `OrderWorkflowV2` (new behavior, no patches). `worker.py` registers it next to `OrderWorkflow`, so both types run side by side. `make seed-rename` opens `9101` (old type) and `9102` (V2); start new orders with `make start WORKFLOW_TYPE=OrderWorkflowV2 ORDER_ID=...`.
+2. `make drain-check WORKFLOW_TYPE=OrderWorkflow` must come back empty (or terminate the stragglers).
+3. Only then remove `OrderWorkflow` from the list in `worker.py` and delete the class. Done while old-type orders are open, they fail (`Workflow class OrderWorkflow is not registered on this worker`); `test_rename_cutover_needs_the_old_type_drained` replays both cases.
+
+| Situation | Approach |
+|---|---|
+| Customer-facing, long-running or high-frequency workflow that may be in flight | `patched()` and the full lifecycle (Demos 2 and 4) |
+| Rare, short or internal workflow | Rename to a new type, drain, delete the old type (Demo 7) |
+| The workflow was never deployed in that environment | Delete the old path directly, no patch needed |
+| Only an activity implementation changed, not the workflow's command sequence | No patch needed. Replay never runs activities (the replay tests register none), so in-flight orders are unaffected |
+
+### Patch ID naming and registry
+
+IDs are `<workflow-slug>-<feature-slug>`: lowercase kebab-case, descriptive of the change rather than the ticket, never reused for a different change in the same workflow type. Active IDs in this demo:
+
+| Patch ID | Used in | Change |
+|---|---|---|
+| `order-fraud-check` | `v2` to `v5` | `check_fraud` before `update_inventory` |
+| `order-notify-on-ship` | `v4`, `v5` | `send_shipment_notification` after shipping |
+| `order-award-loyalty-points` | `v4`, `v5` | `award_loyalty_points` after acknowledgement |
+| `order-reserve-inventory` | `lifecycle_*`, `chain_*`, `anti_*` | `reserve_inventory` replaces `update_inventory` |
+| `order-hold-inventory` | `chain_*`, `anti_nested*` | `hold_inventory` replaces `reserve_inventory` |
+| `order-item-audit` | `anti_patch_in_loop`, `loop_hoisted_ok` | per-item `audit_item` |
+
+One more caveat the tests surfaced: replaying a history that is *parked* at the acknowledgement wait does not check commands the new code adds after that point. To test a change located after the last recorded workflow task, replay a completed history (`capture(..., completed=True)` in `tests/helpers.py`).
 
 ## Tests
 
@@ -131,4 +202,5 @@ What the replay tests (`tests/test_order_workflow.py`) and the scenario diffs sh
 - `reset` re-executes everything after the reset point, so activities like `update_inventory` and `ship_order` must be idempotent (this demo's in-memory ones are not).
 - Don't save `patched()` in a variable (see Demo 3). If you must, keep it 1:1 with one change site, never refactor between inline and hoisted while workflows are open, and deprecate patches in the order they were introduced.
 - Every patch adds a history population (no marker, marker 1, markers 1+2, ...). Keep the list of live patch IDs short, and use `make list-patches` before each deprecation.
+- Call `patched()` inline in the condition, before any `await` that could branch differently, so the marker lands at a deterministic point. See Demos 4 to 7 for the lifecycle, `elif` chains, and the anti-patterns (inverted, nested, in a loop, reused IDs).
 - Don't run replay checks only by eye. Test with `Replayer` against real exported histories (`temporal workflow show --output json`) before deploying.

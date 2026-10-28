@@ -4,11 +4,28 @@ ORDER_ID    ?= 1001
 WORKFLOW_ID ?= order-$(ORDER_ID)
 ADDRESS     ?= 500 Howard St, San Francisco, CA
 RESET_TYPE  ?= LastWorkflowTask
-PATCH_ID    ?= add-fraud-check
-PATCH_IDS   ?= add-fraud-check notify-on-ship award-loyalty-points
+PATCH_ID    ?= order-fraud-check
+PATCH_IDS   ?= order-fraud-check order-notify-on-ship order-award-loyalty-points \
+               order-reserve-inventory order-hold-inventory order-item-audit
+WORKFLOW_TYPE ?= OrderWorkflow
+RETENTION_DAYS ?= 3
+NAME        ?=
 SEED_INLINE  ?= 5001 5002 5003
 SEED_HOISTED ?= 6001 6002
-SEED_ALL     ?= $(SEED_INLINE) $(SEED_HOISTED)
+SEED_LIFECYCLE ?= 7001 7002
+SEED_CHAIN   ?= 8001 8002 8003
+SEED_NESTED  ?= 9001 9002 9003
+SEED_RENAME  ?= 9101 9102
+SEED_IDREUSE ?= 9201
+SEED_ALL     ?= $(SEED_INLINE) $(SEED_HOISTED) $(SEED_LIFECYCLE) $(SEED_CHAIN) $(SEED_NESTED) $(SEED_RENAME) $(SEED_IDREUSE)
+ORDERS       ?= $(SEED_ALL)
+
+# Scenario files from the patching guide (patterns and anti-patterns); each gets a scenario-<name> target.
+GUIDE_SCENARIOS := lifecycle_1_patch lifecycle_2_deprecate lifecycle_3_remove \
+        chain_1_all_versions chain_2_deprecate_oldest chain_3_deprecate_next chain_4_final \
+        anti_inverted anti_inverted_bad_deprecate anti_nested anti_nested_deprecate_inner \
+        anti_patch_in_loop loop_hoisted_ok anti_patch_id_reuse
+GUIDE_TARGETS := $(addprefix scenario-,$(subst _,-,$(GUIDE_SCENARIOS)))
 
 PY          := .venv/bin/python
 WORKER_PID  := .worker.pid
@@ -19,7 +36,8 @@ WORKER_LOG  := .worker.log
         scenario-v1 scenario-v2-bad scenario-v2-good scenario-v3 \
         scenario-v4-multi-inline scenario-v4-multi-hoisted scenario-v5-hoisted-wrong scenario-v5-hoisted-right scenario-v5-inline-deprecate \
         list-patched list-unpatched list-patches seed-inline seed-hoisted status-all reset reset-all terminate \
-        test lint demo-bad demo-good demo-multi
+        test lint demo-bad demo-good demo-multi demo-patterns demo-antipatterns \
+        scenario list-scenarios seed seed-lifecycle seed-chain seed-nested seed-rename seed-idreuse retention-check drain-check $(GUIDE_TARGETS)
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -63,8 +81,8 @@ worker-stop: ## Stop the background worker
 restart-worker: worker-stop worker-bg ## Restart the background worker (picks up a new workflows.py)
 
 # ---- Drive an order (ORDER_ID=1001) --------------------------------------------------------
-start: ## Start an OrderWorkflow for ORDER_ID
-	$(PY) starter.py start $(ORDER_ID)
+start: ## Start a workflow for ORDER_ID (WORKFLOW_TYPE=OrderWorkflow|OrderWorkflowV2)
+	$(PY) starter.py start $(ORDER_ID) --type $(WORKFLOW_TYPE)
 
 ack: ## Customer acknowledges the order (signal)
 	$(PY) starter.py ack $(ORDER_ID)
@@ -112,7 +130,7 @@ scenario-v4-multi-hoisted: ## Live workflows.py := same 3 patches saved in varia
 	cp scenarios/v4_multi_hoisted.py workflows.py
 	@echo ">> workflows.py is now v4 (3 HOISTED patch variables). Run 'make restart-worker'."
 
-scenario-v5-inline-deprecate: ## Live workflows.py := correct deprecation of add-fraud-check with INLINE patches
+scenario-v5-inline-deprecate: ## Live workflows.py := correct deprecation of order-fraud-check with INLINE patches
 	cp scenarios/v5_inline_deprecate.py workflows.py
 	@echo ">> workflows.py is now v5 inline deprecate. Safe only once no open order lacks the marker. Run 'make restart-worker'."
 
@@ -120,9 +138,28 @@ scenario-v5-hoisted-wrong: ## Live workflows.py := WRONG cleanup of a hoisted pa
 	cp scenarios/v5_hoisted_deprecate_wrong.py workflows.py
 	@echo ">> workflows.py is now v5-WRONG. Run 'make restart-worker' and run 'make status-all'."
 
-scenario-v5-hoisted-right: ## Live workflows.py := correct deprecation of the hoisted add-fraud-check patch
+scenario-v5-hoisted-right: ## Live workflows.py := correct deprecation of the hoisted order-fraud-check patch
 	cp scenarios/v5_hoisted_deprecate_right.py workflows.py
 	@echo ">> workflows.py is now v5-RIGHT. Only safe once 'make list-unpatched' and inline-lineage orders are gone."
+
+# ---- Guide scenarios (patterns and anti-patterns) -------------------------------------------
+define guide_scenario
+scenario-$(subst _,-,$(1)):
+	cp scenarios/$(1).py workflows.py
+	@echo ">> workflows.py is now $(1). Run 'make restart-worker'."
+endef
+$(foreach s,$(GUIDE_SCENARIOS),$(eval $(call guide_scenario,$(s))))
+
+scenario: ## Live workflows.py := scenarios/$(NAME).py (see list-scenarios)
+	@test -f scenarios/$(NAME).py || { echo "usage: make scenario NAME=<file in scenarios/ without .py>"; exit 1; }
+	cp scenarios/$(NAME).py workflows.py
+	@echo ">> workflows.py is now $(NAME). Run 'make restart-worker'."
+
+list-scenarios: ## List every scenario file with its one-line description
+	@for f in scenarios/[a-z]*.py; do \
+		name=$$(basename $$f .py); \
+		printf "  %-30s %s\n" "$$name" "$$(head -1 $$f | sed 's/^"""//; s/"""$$//')"; \
+	done
 
 # ---- Patch bookkeeping & recovery ----------------------------------------------------------
 list-patched: ## Open orders that have the patch marker (PATCH_ID=...)
@@ -142,9 +179,10 @@ list-patches: ## Show open orders per patch ID (PATCH_IDS=...) and those with no
 define seed_orders
 	@set -e; \
 	for entry in $(1); do \
-		scenario=$${entry%%:*}; id=$${entry##*:}; \
+		scenario=$${entry%%:*}; rest=$${entry#*:}; id=$${rest%%:*}; type=$${rest#*:}; \
+		[ "$$type" = "$$rest" ] && type=OrderWorkflow; \
 		$(MAKE) --no-print-directory $$scenario restart-worker >/dev/null; \
-		$(PY) starter.py start $$id; \
+		$(PY) starter.py start $$id --type $$type; \
 		for i in $$(seq 1 60); do \
 			$(PY) starter.py status $$id 2>/dev/null | grep -q '^SHIPPED' && break; sleep 1; \
 		done; \
@@ -160,8 +198,26 @@ seed-hoisted: ## Hoisted track: 6001 (v1, no marker), 6002 (v4-hoisted); leaves 
 	$(call seed_orders,"scenario-v1:6001" "scenario-v4-multi-hoisted:6002")
 	@echo "Seeded 6001=no markers, 6002=3 markers (hoisted). Live: v4-hoisted."
 
-status-all: ## Query the seeded orders (SEED_ALL); shows which fail replay after a deploy
-	@for id in $(SEED_ALL); do \
+seed: ## Generic seeding: make seed SEED="scenario-v1:9901 scenario-v2-good:9902[:WorkflowType]"
+	$(call seed_orders,$(SEED))
+
+seed-lifecycle: ## Lifecycle: 7001 (legacy), 7002 (phase-1 marker); leaves phase 1 live
+	$(call seed_orders,"scenario-v1:7001" "scenario-lifecycle-1-patch:7002")
+
+seed-chain: ## Chain: 8001 (legacy), 8002 (reserve era), 8003 (hold era); leaves chain step 1 live
+	$(call seed_orders,"scenario-v1:8001" "scenario-lifecycle-1-patch:8002" "scenario-chain-1-all-versions:8003")
+
+seed-nested: ## Nested: 9001 (legacy), 9002 (outer only), 9003 (outer+inner); leaves anti_nested live
+	$(call seed_orders,"scenario-v1:9001" "scenario-lifecycle-1-patch:9002" "scenario-anti-nested:9003")
+
+seed-rename: ## Rename/cutover: 9101 (OrderWorkflow), 9102 (OrderWorkflowV2); both types run side by side
+	$(call seed_orders,"scenario-v1:9101:OrderWorkflow" "scenario-v1:9102:OrderWorkflowV2")
+
+seed-idreuse: ## ID reuse: 9201 (reserve marker), parked; deploy anti_patch_id_reuse, ack it, inspect its history
+	$(call seed_orders,"scenario-lifecycle-1-patch:9201")
+
+status-all: ## Query the seeded orders (ORDERS=...); shows which fail replay after a deploy
+	@for id in $(ORDERS); do \
 		printf "order %s: " $$id; \
 		$(PY) starter.py status $$id 2>&1 | tail -1 | cut -c1-200; \
 	done
@@ -215,3 +271,39 @@ demo-multi: ## Print the multiple-patches walkthrough (inline track, then hoiste
 	@echo "   -> 6002 fine, 6001 fails; diff scenarios/v4_multi_hoisted.py scenarios/v5_hoisted_deprecate_right.py (3 scattered hunks)"
 	@echo "Inline and hoisted lineages are NOT replay-compatible, hence separate order ids (5xxx / 6xxx)."
 	@echo "Cleanup: make server-reset"
+
+retention-check: ## Phase-2 readiness: retention, open orders per patch / no marker, recently closed orders
+	@echo "== namespace retention"; \
+	temporal operator namespace describe -n default 2>&1 | grep -i retention || true
+	@$(MAKE) --no-print-directory list-patches
+	@cutoff=$$(python3 -c "import datetime as d; print((d.datetime.now(d.timezone.utc)-d.timedelta(days=$(RETENTION_DAYS))).strftime('%Y-%m-%dT%H:%M:%SZ'))"); \
+	echo "== $(WORKFLOW_TYPE) closed since $$cutoff (RETENTION_DAYS=$(RETENTION_DAYS); still replayable)"; \
+	temporal workflow list --query "WorkflowType = \"$(WORKFLOW_TYPE)\" AND ExecutionStatus != \"Running\" AND CloseTime > \"$$cutoff\"" 2>&1 | tail -n +2
+	@echo "== Deploy phase 2 (deprecate_patch) only when: 1) no open order lacks the marker, 2) the retention window for the last old-path order has elapsed."
+
+drain-check: ## Open executions of WORKFLOW_TYPE (must be empty before deleting that workflow class)
+	temporal workflow list --query 'WorkflowType = "$(WORKFLOW_TYPE)" AND ExecutionStatus = "Running"'
+
+demo-patterns: ## Print the guide's pattern walkthroughs (lifecycle, elif chain, rename/cutover)
+	@echo "== Lifecycle (patch -> deprecate -> remove) =="
+	@echo "1. make server-bg && make seed-lifecycle      # 7001 legacy, 7002 phase-1 marker; phase 1 live"
+	@echo "2. make scenario-lifecycle-2-deprecate restart-worker; make status-all   # 7001 FAILS: drain legacy first (make ack ORDER_ID=7001)"
+	@echo "3. make scenario-lifecycle-3-remove restart-worker; make status-all      # 7002 FAILS: skipping phase 2 breaks phase-1 markers"
+	@echo "== Chain (bottom-up) =="
+	@echo "4. make server-reset && make server-bg && make seed-chain               # 8001 legacy, 8002 reserve era, 8003 hold era"
+	@echo "5. make scenario-chain-3-deprecate-next restart-worker; make status-all  # top-down: 8001, 8002 FAIL"
+	@echo "   proper order: ack 8001, make scenario-chain-2-deprecate-oldest, ack 8002, then chain-3, then chain-4"
+	@echo "== Rename/cutover =="
+	@echo "6. make seed-rename                            # 9101 OrderWorkflow, 9102 OrderWorkflowV2"
+	@echo "   make drain-check WORKFLOW_TYPE=OrderWorkflow ; make ack ORDER_ID=9101"
+	@echo "   then, only once drain-check is empty, remove OrderWorkflow from worker.py's workflows list and delete the class"
+	@echo "Always: make retention-check before a deprecate step."
+
+demo-antipatterns: ## Print the guide's anti-pattern walkthroughs
+	@echo "1. Inverted:  make scenario-anti-inverted (replays fine, but read it);  anti-inverted-bad-deprecate breaks new orders"
+	@echo "2. Nested:    make server-reset && make server-bg && make seed-nested; make scenario-anti-nested-deprecate-inner restart-worker; make status-all   # 9002 FAILS"
+	@echo "3. In a loop: make scenario-anti-patch-in-loop vs scenario-loop-hoisted-ok: identical replay; the loop form misleads readers"
+	@echo "4. ID reuse:  make seed-idreuse; make scenario-anti-patch-id-reuse restart-worker; make ack ORDER_ID=9201; make show WORKFLOW_ID=order-9201"
+	@echo "   (an open order does NOT fail: it silently runs send_shipment_notification it never had. Orders whose history already"
+	@echo "    passed that point fail replay: see tests/test_patterns.py)"
+	@echo "5. Bad IDs (ticket numbers, mixed case): rejected by tests/test_patterns.py naming test"

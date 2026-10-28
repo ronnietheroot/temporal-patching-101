@@ -7,11 +7,14 @@ from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
 from activities import (
+    audit_item,
     award_loyalty_points,
     check_fraud,
     check_inventory,
     check_stock,
     get_order,
+    hold_inventory,
+    reserve_inventory,
     restore_inventory,
     send_shipment_notification,
     ship_order,
@@ -19,6 +22,7 @@ from activities import (
 )
 from models import TASK_QUEUE
 from workflows import OrderWorkflow
+from workflows_v2 import OrderWorkflowV2
 
 
 async def main() -> None:
@@ -31,7 +35,7 @@ async def main() -> None:
         worker = Worker(
             client,
             task_queue=TASK_QUEUE,
-            workflows=[OrderWorkflow],
+            workflows=[OrderWorkflow, OrderWorkflowV2],
             activities=[
                 get_order,
                 check_stock,
@@ -42,6 +46,9 @@ async def main() -> None:
                 ship_order,
                 send_shipment_notification,
                 award_loyalty_points,
+                reserve_inventory,
+                hold_inventory,
+                audit_item,
             ],
             activity_executor=executor,
         )

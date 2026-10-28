@@ -7,9 +7,7 @@ customer, capture the history, then replay it against each scenario's code.
 import uuid
 
 import pytest
-from temporalio.client import Client, WorkflowFailureError, WorkflowUpdateFailedError
-from temporalio.testing import WorkflowEnvironment
-from temporalio.worker import Replayer, Worker, WorkflowReplayResult
+from temporalio.client import WorkflowFailureError, WorkflowUpdateFailedError
 
 import activities
 from models import TASK_QUEUE
@@ -24,52 +22,7 @@ from scenarios import (
     v5_hoisted_deprecate_wrong,
     v5_inline_deprecate,
 )
-
-ALL_ACTIVITIES = [
-    activities.get_order,
-    activities.check_stock,
-    activities.check_inventory,
-    activities.check_fraud,
-    activities.update_inventory,
-    activities.restore_inventory,
-    activities.ship_order,
-    activities.send_shipment_notification,
-    activities.award_loyalty_points,
-]
-
-
-@pytest.fixture(autouse=True)
-def fast_activities(monkeypatch):
-    monkeypatch.setenv("ACTIVITY_DELAY_MIN", "0")
-    monkeypatch.setenv("ACTIVITY_DELAY_MAX", "0")
-
-
-@pytest.fixture
-async def env():
-    async with await WorkflowEnvironment.start_local() as env:
-        yield env
-
-
-def worker_for(client: Client, workflow_cls) -> Worker:
-    from concurrent.futures import ThreadPoolExecutor
-
-    return Worker(
-        client,
-        task_queue=TASK_QUEUE,
-        workflows=[workflow_cls],
-        activities=ALL_ACTIVITIES,
-        activity_executor=ThreadPoolExecutor(5),
-    )
-
-
-async def wait_for_status(handle, status: str) -> None:
-    import asyncio
-
-    for _ in range(100):
-        if (await handle.query("get_status")).startswith(status):
-            return
-        await asyncio.sleep(0.1)
-    raise AssertionError(f"never reached {status}")
+from tests.helpers import replay, wait_for_status, worker_for
 
 
 async def test_ack_completes_order(env):
@@ -123,12 +76,6 @@ async def v1_history(env):
         )
         await wait_for_status(handle, "SHIPPED")
         return await handle.fetch_history()
-
-
-async def replay(workflow_cls, history) -> WorkflowReplayResult:
-    return await Replayer(workflows=[workflow_cls]).replay_workflow(
-        history, raise_on_replay_failure=False
-    )
 
 
 async def test_replay_v1_history_with_v1_is_fine(v1_history):
@@ -218,9 +165,11 @@ def test_right_cleanup_keeps_remaining_patches():
     import inspect
 
     src = inspect.getsource(v5_hoisted_deprecate_right)
-    assert 'deprecate_patch("add-fraud-check")' in src
-    assert 'patched("add-fraud-check")' not in src
-    assert 'patched("notify-on-ship")' in src and 'patched("award-loyalty-points")' in src
+    assert 'deprecate_patch("order-fraud-check")' in src
+    assert 'patched("order-fraud-check")' not in src
+    assert (
+        'patched("order-notify-on-ship")' in src and 'patched("order-award-loyalty-points")' in src
+    )
 
 
 @pytest.fixture

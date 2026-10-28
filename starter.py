@@ -12,7 +12,10 @@ from models import TASK_QUEUE
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ("start", "ack", "cancel", "status", "result"):
+    start = sub.add_parser("start")
+    start.add_argument("order_id")
+    start.add_argument("--type", default="OrderWorkflow", help="workflow type name")
+    for name in ("ack", "cancel", "status", "result"):
         sub.add_parser(name).add_argument("order_id")
     addr = sub.add_parser("address")
     addr.add_argument("order_id")
@@ -26,7 +29,7 @@ async def main() -> None:
 
     if args.cmd == "start":
         handle = await client.start_workflow(
-            "OrderWorkflow", args.order_id, id=workflow_id, task_queue=TASK_QUEUE
+            args.type, args.order_id, id=workflow_id, task_queue=TASK_QUEUE
         )
         print(f"Started {handle.id} (run {handle.result_run_id})")
         return

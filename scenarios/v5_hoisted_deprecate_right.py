@@ -1,10 +1,10 @@
-"""v5 (PROPER cleanup): deprecating add-fraud-check when it is hoisted into a variable.
+"""v5 (PROPER cleanup): deprecating order-fraud-check when it is hoisted into a variable.
 
 Required edits: (1) replace the assignment with deprecate_patch() at the SAME position (first of
 the three patch calls, so marker order is unchanged), (2) rewrite the guarded activity call,
 (3) hunt down the second use far below, (4) leave notify/loyalty and their coupled condition
 alone. Miss any use site and you get a NameError or a silent behavior change. Only deploy once
-no open workflow lacks the add-fraud-check marker.
+no open workflow lacks the order-fraud-check marker.
 """
 
 from datetime import timedelta
@@ -45,9 +45,9 @@ class OrderWorkflow:
     async def run(self, order_id: str) -> str:
         # Patch results saved up front and reused below. This is the style to avoid: every
         # use site now has to be found and edited when one of these patches is deprecated.
-        workflow.deprecate_patch("add-fraud-check")
-        notify = workflow.patched("notify-on-ship")
-        loyalty = workflow.patched("award-loyalty-points")
+        workflow.deprecate_patch("order-fraud-check")
+        notify = workflow.patched("order-notify-on-ship")
+        loyalty = workflow.patched("order-award-loyalty-points")
 
         order = await workflow.execute_activity(get_order, order_id, **ACTIVITY_OPTS)
         self._address = order.shipping_address

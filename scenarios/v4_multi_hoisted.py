@@ -43,9 +43,9 @@ class OrderWorkflow:
     async def run(self, order_id: str) -> str:
         # Patch results saved up front and reused below. This is the style to avoid: every
         # use site now has to be found and edited when one of these patches is deprecated.
-        fraud_check = workflow.patched("add-fraud-check")
-        notify = workflow.patched("notify-on-ship")
-        loyalty = workflow.patched("award-loyalty-points")
+        fraud_check = workflow.patched("order-fraud-check")
+        notify = workflow.patched("order-notify-on-ship")
+        loyalty = workflow.patched("order-award-loyalty-points")
 
         order = await workflow.execute_activity(get_order, order_id, **ACTIVITY_OPTS)
         self._address = order.shipping_address

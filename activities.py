@@ -16,8 +16,8 @@ from temporalio.exceptions import ApplicationError
 from models import Order, OrderItem, ShipmentInfo
 
 INVENTORY: dict[str, dict[str, int]] = {
-    "east": {"WIDGET-1": 50, "GADGET-2": 10},
-    "west": {"WIDGET-1": 5, "GADGET-2": 40},
+    "east": {"WIDGET-1": 1000, "GADGET-2": 1000},
+    "west": {"WIDGET-1": 100, "GADGET-2": 1000},
 }
 
 
@@ -35,7 +35,7 @@ def get_order(order_id: str) -> Order:
         order_id=order_id,
         customer_id="cust-42",
         shipping_address="1 Market St, San Francisco, CA",
-        items=[OrderItem(sku=sku, quantity=2)],
+        items=[OrderItem(sku=sku, quantity=2), OrderItem(sku="GADGET-2", quantity=1)],
     )
 
 
@@ -95,12 +95,35 @@ def ship_order(order: Order, warehouse: str, address: str) -> ShipmentInfo:
 
 @activity.defn
 def send_shipment_notification(order: Order, shipment: ShipmentInfo) -> None:
-    """Added by the `notify-on-ship` patch."""
+    """Added by the `order-notify-on-ship` patch."""
     _delay()
 
 
 @activity.defn
 def award_loyalty_points(order: Order) -> int:
-    """Added by the `award-loyalty-points` patch."""
+    """Added by the `order-award-loyalty-points` patch."""
     _delay()
     return sum(item.quantity for item in order.items) * 10
+
+
+@activity.defn
+def reserve_inventory(order: Order, warehouse: str) -> None:
+    """Replacement for update_inventory (patch `order-reserve-inventory`)."""
+    _delay()
+    for item in order.items:
+        INVENTORY[warehouse][item.sku] -= item.quantity
+
+
+@activity.defn
+def hold_inventory(order: Order, warehouse: str) -> str:
+    """Second-generation replacement (patch `order-hold-inventory`); returns a hold id."""
+    _delay()
+    for item in order.items:
+        INVENTORY[warehouse][item.sku] -= item.quantity
+    return f"HOLD-{order.order_id}"
+
+
+@activity.defn
+def audit_item(item: OrderItem) -> None:
+    """Per-item audit record (patch `order-item-audit`), used by the loop demos."""
+    _delay()

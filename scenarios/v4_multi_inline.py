@@ -1,7 +1,7 @@
 """v4 (PROPER, inline): three patches, each guarded where the change takes effect.
 
-Patches: add-fraud-check (before update_inventory), notify-on-ship (after ship_order),
-award-loyalty-points (after the customer acknowledges). Every execution population
+Patches: order-fraud-check (before update_inventory), order-notify-on-ship (after ship_order),
+order-award-loyalty-points (after the customer acknowledges). Every execution population
 (no marker / fraud only / all three) replays cleanly.
 """
 
@@ -48,7 +48,7 @@ class OrderWorkflow:
         await workflow.execute_activity(check_stock, order, **ACTIVITY_OPTS)
         warehouse = await workflow.execute_activity(check_inventory, order, **ACTIVITY_OPTS)
 
-        if workflow.patched("add-fraud-check"):  # noqa: SIM102 (kept nested for readability)
+        if workflow.patched("order-fraud-check"):  # noqa: SIM102 (kept nested for readability)
             if not await workflow.execute_activity(check_fraud, order, **ACTIVITY_OPTS):
                 self._status = OrderStatus.FAILED
                 raise ApplicationError("Order flagged as fraudulent", non_retryable=True)
@@ -68,7 +68,7 @@ class OrderWorkflow:
             self._status = OrderStatus.FAILED
             raise
         self._status = OrderStatus.SHIPPED
-        if workflow.patched("notify-on-ship"):
+        if workflow.patched("order-notify-on-ship"):
             await workflow.execute_activity(
                 send_shipment_notification, args=[order, shipment], **ACTIVITY_OPTS
             )
@@ -79,7 +79,7 @@ class OrderWorkflow:
             self._status = OrderStatus.CANCELLED
             return f"{shipment.tracking_number}: cancelled"
         self._status = OrderStatus.DELIVERED
-        if workflow.patched("award-loyalty-points"):
+        if workflow.patched("order-award-loyalty-points"):
             points = await workflow.execute_activity(award_loyalty_points, order, **ACTIVITY_OPTS)
             return f"{shipment.tracking_number}: delivered and acknowledged, +{points} points"
         return f"{shipment.tracking_number}: delivered and acknowledged"

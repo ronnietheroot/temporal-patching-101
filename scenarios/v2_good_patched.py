@@ -45,7 +45,7 @@ class OrderWorkflow:
         await workflow.execute_activity(check_stock, order, **ACTIVITY_OPTS)
         warehouse = await workflow.execute_activity(check_inventory, order, **ACTIVITY_OPTS)
 
-        if workflow.patched("add-fraud-check"):  # noqa: SIM102 (kept nested for readability)
+        if workflow.patched("order-fraud-check"):  # noqa: SIM102 (kept nested for readability)
             if not await workflow.execute_activity(check_fraud, order, **ACTIVITY_OPTS):
                 self._status = OrderStatus.FAILED
                 raise ApplicationError("Order flagged as fraudulent", non_retryable=True)

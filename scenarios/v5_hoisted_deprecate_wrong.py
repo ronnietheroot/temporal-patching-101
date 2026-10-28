@@ -1,4 +1,4 @@
-"""v5 (IMPROPER cleanup): "deprecating" add-fraud-check by hardcoding the variable to True.
+"""v5 (IMPROPER cleanup): "deprecating" order-fraud-check by hardcoding the variable to True.
 
 Looks like a one-line change, but the fraud check now runs unconditionally for histories that
 never recorded the marker (-> NondeterminismError), and no deprecate_patch() call exists for
@@ -44,8 +44,8 @@ class OrderWorkflow:
         # Patch results saved up front and reused below. This is the style to avoid: every
         # use site now has to be found and edited when one of these patches is deprecated.
         fraud_check = True  # "rolled out everywhere", so simplify (NO deprecate_patch)
-        notify = workflow.patched("notify-on-ship")
-        loyalty = workflow.patched("award-loyalty-points")
+        notify = workflow.patched("order-notify-on-ship")
+        loyalty = workflow.patched("order-award-loyalty-points")
 
         order = await workflow.execute_activity(get_order, order_id, **ACTIVITY_OPTS)
         self._address = order.shipping_address

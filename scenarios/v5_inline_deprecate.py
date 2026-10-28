@@ -1,9 +1,9 @@
-"""v5 (PROPER cleanup, inline style): deprecating add-fraud-check.
+"""v5 (PROPER cleanup, inline style): deprecating order-fraud-check.
 
 One contiguous edit at the change site: the patched() guard becomes deprecate_patch() and the
-body is unguarded. notify-on-ship and award-loyalty-points are untouched. Compare with
+body is unguarded. order-notify-on-ship and order-award-loyalty-points are untouched. Compare with
 v5_hoisted_deprecate_right.py, where the same cleanup is scattered across the run method.
-Only deploy once no open workflow lacks the add-fraud-check marker.
+Only deploy once no open workflow lacks the order-fraud-check marker.
 """
 
 from datetime import timedelta
@@ -49,7 +49,7 @@ class OrderWorkflow:
         await workflow.execute_activity(check_stock, order, **ACTIVITY_OPTS)
         warehouse = await workflow.execute_activity(check_inventory, order, **ACTIVITY_OPTS)
 
-        workflow.deprecate_patch("add-fraud-check")
+        workflow.deprecate_patch("order-fraud-check")
         if not await workflow.execute_activity(check_fraud, order, **ACTIVITY_OPTS):
             self._status = OrderStatus.FAILED
             raise ApplicationError("Order flagged as fraudulent", non_retryable=True)
@@ -69,7 +69,7 @@ class OrderWorkflow:
             self._status = OrderStatus.FAILED
             raise
         self._status = OrderStatus.SHIPPED
-        if workflow.patched("notify-on-ship"):
+        if workflow.patched("order-notify-on-ship"):
             await workflow.execute_activity(
                 send_shipment_notification, args=[order, shipment], **ACTIVITY_OPTS
             )
@@ -80,7 +80,7 @@ class OrderWorkflow:
             self._status = OrderStatus.CANCELLED
             return f"{shipment.tracking_number}: cancelled"
         self._status = OrderStatus.DELIVERED
-        if workflow.patched("award-loyalty-points"):
+        if workflow.patched("order-award-loyalty-points"):
             points = await workflow.execute_activity(award_loyalty_points, order, **ACTIVITY_OPTS)
             return f"{shipment.tracking_number}: delivered and acknowledged, +{points} points"
         return f"{shipment.tracking_number}: delivered and acknowledged"
